@@ -1,0 +1,20 @@
+name: Enforce main merge source
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  only-development-to-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch
+        run: |
+          echo "Base branch: ${{ github.base_ref }}"
+          echo "Head branch: ${{ github.head_ref }}"
+
+          if [ "${{ github.head_ref }}" != "development" ]; then
+            echo "Only pull requests from 'development' may be merged into 'main'."
+            exit 1
+          fi
