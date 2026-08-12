@@ -1,0 +1,99 @@
+name: bootstrap-new-repo
+on:
+  repository:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create enforcement workflow in new repo
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          script: |
+            const repo = context.payload.repository;
+            const owner = repo.owner.login;
+            const name = repo.name;
+            const path = ".github/workflows/enforce-dev-to-main.yml";
+            const content = `name: pr-source-branch-check
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [ main ]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-and-close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source branch is development
+        id: verify
+        run: |
+          echo "PR head branch = '\${{ github.head_ref }}'"
+          if [ "\${{ github.head_ref }}" = "development" ]; then
+            echo "allowed=true" >> $GITHUB_OUTPUT
+            exit 0
+          else
+            echo "allowed=false" >> $GITHUB_OUTPUT
+            echo "This PR will be closed because only PRs from 'development' into 'main' are allowed." > /tmp/msg
+            exit 1
+          fi
+
+      - name: Comment and close PR (only when not allowed)
+        if: steps.verify.outputs.allowed == 'false'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const body = "Dieser Pull Request wurde automatisch geschlossen: Merges nach `main` sind nur aus dem Branch `development` erlaubt. Bitte erstelle den PR von `development`.";
+            await github.issues.createComment({
+              owner, repo, issue_number: pr.number,
+              body
+            });
+            await github.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+`;
+
+            // create file
+            await github.repos.createOrUpdateFileContents({
+              owner,
+              repo: name,
+              path,
+              message: "chore(ci): add enforcement workflow (enforce dev->main)",
+              content: Buffer.from(content).toString('base64'),
+              committer: { name: "alpha-alpaka-bot", email: "noreply@alpha-alpaka" },
+              author: { name: "alpha-alpaka-bot", email: "noreply@alpha-alpaka" }
+            });
+
+      - name: Optionally set branch protection for 'main' in the new repo
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          script: |
+            const repo = context.payload.repository;
+            const owner = repo.owner.login;
+            const name = repo.name;
+            // Try to set branch protection for 'main' (if exists)
+            try {
+              await github.repos.getBranch({
+                owner, repo: name, branch: 'main'
+              });
+              await github.request('PUT /repos/{owner}/{repo}/branches/{branch}/protection', {
+                owner, repo: name, branch: 'main',
+                required_status_checks: { strict: true, contexts: ['pr-source-branch-check'] },
+                enforce_admins: true,
+                required_pull_request_reviews: { required_approving_review_count: 1 },
+                restrictions: null
+              });
+            } catch (e) {
+              console.log('main branch not present yet or protection failed, skip protection for now');
+            }
